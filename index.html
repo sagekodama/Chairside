@@ -185,6 +185,15 @@ nav{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(92px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);border-radius:12px;padding:10px 14px;display:flex;gap:14px;align-items:center;z-index:60;font-size:14px;box-shadow:var(--shadow);max-width:calc(100% - 32px);}
 .toast button{border:0;background:none;color:var(--accent);font-weight:700;padding:0;filter:brightness(1.25);}
 .privacy{color:var(--muted);font-size:13px;text-align:center;margin:22px 12px 0;}
+.privacy .link{font-size:13px;}
+#auth{position:fixed;inset:0;z-index:100;background:var(--bg);display:none;align-items:center;justify-content:center;padding:24px;padding-top:calc(24px + env(safe-area-inset-top,0px));}
+.authbox{width:100%;max-width:380px;}
+.authbox .card{padding:26px 22px;}
+.auth-title{font-family:var(--head);font-weight:700;font-size:30px;letter-spacing:-.02em;margin:0;color:var(--ink);}
+.auth-sub{color:var(--muted);font-size:15px;margin:4px 0 6px;}
+.auth-err{color:var(--urgent);font-size:14px;font-weight:600;margin:12px 0 0;}
+.auth-line{text-align:center;color:var(--muted);font-size:14px;margin:14px 0 0;}
+body.pre-auth{overflow:hidden;}
 .hrow{display:flex;justify-content:space-between;align-items:center;gap:10px;min-height:40px;}
 .hrow .date{margin:0;}
 .hbtns{display:flex;gap:6px;}
@@ -242,7 +251,7 @@ nav{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:
     <p class="summary" id="summary"></p>
   </header>
   <main id="main"></main>
-  <p class="privacy">Saved on this device only. Use first names or initials for patients.</p>
+  <p class="privacy" id="privacy">Saved on this device only. Use first names or initials for patients.</p>
 </div>
 
 <button class="fab" id="fab" aria-label="Add"></button>
@@ -266,8 +275,10 @@ nav{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:
 
 <div id="alerts"></div>
 <div id="layer"></div>
+<div id="auth"></div>
 <div id="toastbox"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 (function(){
 "use strict";
@@ -359,8 +370,95 @@ var state={patients:[],general:[],messages:[],timers:{},trays:{},trayOpen:{}};
 var ui={tab:"todo",date:"",calMonth:null,trayAdd:null,secAdding:null,role:"all",msgFilter:"waiting",addingTo:null,sheet:null,draft:null,urgent:false};
 var lastRemoved=null, toastTimer=null;
 
-function load(){try{var raw=localStorage.getItem(KEY);if(raw){var s=JSON.parse(raw);if(s&&typeof s==="object"){state.patients=s.patients||[];state.general=s.general||[];state.messages=s.messages||[];state.timers=s.timers||{};state.trays=s.trays||{};state.trayOpen=s.trayOpen||{};}}}catch(e){}}
-function save(){try{localStorage.setItem(KEY,JSON.stringify(state));}catch(e){}}
+function applyLoadedState(raw){if(raw&&typeof raw==="object"){state.patients=raw.patients||[];state.general=raw.general||[];state.messages=raw.messages||[];state.timers=raw.timers||{};state.trays=raw.trays||{};state.trayOpen=raw.trayOpen||{};}else{state.patients=[];state.general=[];state.messages=[];state.timers={};state.trays={};state.trayOpen={};}}
+function loadLocal(){try{var raw=localStorage.getItem(KEY);if(raw)applyLoadedState(JSON.parse(raw));}catch(e){}}
+function save(){if(mode==="cloud"){scheduleCloudSave();}else{try{localStorage.setItem(KEY,JSON.stringify(state));}catch(e){}}}
+
+/* ---------- Supabase auth + cloud sync ---------- */
+var SB_URL="https://jybfklxnukblnsmwvwsn.supabase.co";
+var SB_KEY="sb_publishable_W447VzER4rAWlSGHgNuSWw_sSGLgPfM";
+var EMAIL_DOMAIN="chairside.app";
+var sb=null, mode="local", currentUser=null, saveTimer=null, tickStarted=false, authMode="login";
+
+function initSupabase(){try{if(window.supabase&&window.supabase.createClient){sb=window.supabase.createClient(SB_URL,SB_KEY);return true;}}catch(e){}return false;}
+function scheduleCloudSave(){clearTimeout(saveTimer);saveTimer=setTimeout(pushCloud,700);}
+function pushCloud(){if(!sb||!currentUser)return;try{sb.from("app_state").upsert({user_id:currentUser.id,data:state,updated_at:new Date().toISOString()}).then(function(res){if(res&&res.error)console.warn("cloud save failed:",res.error.message);},function(e){console.warn("cloud save error",e);});}catch(e){}}
+
+function emailFor(u){return u.toLowerCase().trim()+"@"+EMAIL_DOMAIN;}
+function userFromEmail(e){return (e||"").split("@")[0];}
+function aEl(id){return document.getElementById(id);}
+function authErr(msg){var e=aEl("au-err");if(e){e.textContent=msg||"";e.style.display=msg?"block":"none";}}
+function authBusy(b){var s=aEl("au-submit");if(s){s.disabled=b;s.textContent=b?"Please wait…":(authMode==="signup"?"Create account":"Log in");}}
+function friendlyAuth(m){m=(m||"").toLowerCase();
+  if(m.indexOf("already")>-1&&m.indexOf("regist")>-1)return "That username is taken — try logging in instead.";
+  if(m.indexOf("invalid")>-1)return "Wrong username or password.";
+  if(m.indexOf("6 char")>-1||(m.indexOf("password")>-1&&m.indexOf("short")>-1))return "Password must be at least 6 characters.";
+  if(m.indexOf("fetch")>-1||m.indexOf("network")>-1||m.indexOf("failed to")>-1)return "Can't reach the server. Check your connection, or use this device only.";
+  return m?(m.charAt(0).toUpperCase()+m.slice(1)+"."):"Something went wrong. Please try again.";}
+
+function renderAuth(){
+  var box=aEl("auth");if(!box)return;var signup=authMode==="signup";
+  box.innerHTML='<div class="authbox"><div class="card">'+
+    '<h1 class="auth-title">Chairside</h1>'+
+    '<p class="auth-sub">'+(signup?"Create an account to save your checklists":"Log in to your checklists")+'</p>'+
+    '<label class="field" for="au-user">Username</label><input id="au-user" type="text" autocomplete="username" autocapitalize="none" spellcheck="false">'+
+    '<label class="field" for="au-pass">Password</label><input id="au-pass" type="password" autocomplete="'+(signup?"new-password":"current-password")+'">'+
+    '<p class="auth-err" id="au-err" style="display:none"></p>'+
+    '<button class="btn block" id="au-submit" data-a="au-do">'+(signup?"Create account":"Log in")+'</button>'+
+    '<p class="auth-line">'+(signup?"Already have an account? ":"New here? ")+'<button class="link" data-a="au-switch">'+(signup?"Log in":"Create an account")+'</button></p>'+
+    '<p class="auth-line"><button class="link quiet" data-a="au-local">Use on this device only</button></p>'+
+    '</div></div>';
+}
+function showAuth(){document.body.classList.add("pre-auth");renderAuth();var b=aEl("auth");if(b)b.style.display="flex";var u=aEl("au-user");if(u)u.focus();}
+function hideAuth(){var b=aEl("auth");if(b){b.style.display="none";b.innerHTML="";}document.body.classList.remove("pre-auth");}
+
+function doAuth(){
+  if(!sb){authErr("Server not loaded. Use this device only for now.");return;}
+  var u=((aEl("au-user")||{}).value||"").trim(), p=(aEl("au-pass")||{}).value||"";
+  if(u.length<3){authErr("Username must be at least 3 characters.");return;}
+  if(p.length<6){authErr("Password must be at least 6 characters.");return;}
+  authErr("");authBusy(true);
+  var email=emailFor(u);
+  var pr=authMode==="signup"?sb.auth.signUp({email:email,password:p}):sb.auth.signInWithPassword({email:email,password:p});
+  pr.then(function(res){authBusy(false);
+    if(res.error){authErr(friendlyAuth(res.error.message));return;}
+    var user=res.data&&res.data.user;
+    if(!user){authErr("Something went wrong, please try again.");return;}
+    if(authMode==="signup"&&res.data&&!res.data.session){authErr("Account made, but email confirmation looks on. Turn it off in Supabase, then log in.");authMode="login";renderAuth();return;}
+    onLoggedIn(user,u);
+  },function(){authBusy(false);authErr("Can't reach the server. Check your connection, or use this device only.");});
+}
+function onLoggedIn(user,uname){mode="cloud";currentUser={id:user.id,username:uname||userFromEmail(user.email)};hideAuth();loadCloudThenStart();}
+function loadCloudThenStart(){
+  var go=function(raw){applyLoadedState(raw);startApp();};
+  try{sb.from("app_state").select("data").eq("user_id",currentUser.id).maybeSingle().then(function(res){go(res&&!res.error&&res.data?res.data.data:null);},function(){go(null);});}
+  catch(e){go(null);}
+}
+function useLocal(){mode="local";currentUser=null;hideAuth();loadLocal();startApp();}
+function doLogout(){var done=function(){try{location.reload();}catch(e){}};try{if(sb&&sb.auth)sb.auth.signOut().then(done,done);else done();}catch(e){done();}}
+
+function postLoadSetup(){
+  ui.date=todayStr();
+  if(state.timers&&state.timers.autoclave&&!state.timers.sterilization){state.timers.sterilization=state.timers.autoclave;try{delete state.timers.autoclave;}catch(e){}}
+  state.patients.forEach(function(p){if(!p.date)p.date=ui.date;});
+  state.general.forEach(function(t){if(!t.date)t.date=ui.date;});
+  TRAYS.forEach(function(tr){if(state.trays[tr.key]===undefined)state.trays[tr.key]=TRAY_DEFAULTS[tr.key]?TRAY_DEFAULTS[tr.key].slice():[];});
+  state.patients.forEach(function(p){
+    if(!p.sections){var legacy=(p.tasks||[]).map(function(t){return {id:t.id||uid(),text:t.text,done:!!t.done};});p.sections=legacy.length?[{id:uid(),title:"Checklist",open:false,tasks:legacy}]:[];}
+    try{delete p.tasks;}catch(e){}
+    if(p.ord==null)p.ord=smartMin(p);
+  });
+}
+function renderAuthFooter(){var el=aEl("privacy");if(!el)return;
+  if(mode==="cloud"&&currentUser){el.innerHTML='Signed in as <strong>'+esc(currentUser.username)+'</strong> &middot; <button class="link" data-a="logout">Log out</button>';}
+  else{el.textContent="Saved on this device only. Use first names or initials for patients.";}}
+function startApp(){postLoadSetup();save();render();renderAuthFooter();if(!tickStarted){tick();setInterval(tick,1000);tickStarted=true;}}
+
+function boot(){
+  if(!initSupabase()){useLocal();return;}
+  try{sb.auth.getSession().then(function(res){var sess=res&&res.data&&res.data.session;if(sess&&sess.user){onLoggedIn(sess.user,userFromEmail(sess.user.email));}else{showAuth();}},function(){showAuth();});}
+  catch(e){showAuth();}
+}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
 function pad(n){return (n<10?"0":"")+n;}
 function dstr(d){return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate());}
@@ -769,6 +867,10 @@ document.addEventListener("click",function(e){
   if(a==="scrim"){if(e.target===el)closeSheet();return;}
   var v=el.dataset.v,p=el.dataset.p,t=el.dataset.t;
   switch(a){
+    case "au-do":doAuth();break;
+    case "au-switch":authMode=(authMode==="signup"?"login":"signup");renderAuth();var _uu=aEl("au-user");if(_uu)_uu.focus();break;
+    case "au-local":useLocal();break;
+    case "logout":doLogout();break;
     case "tab":ui.tab=v;ui.addingTo=null;ui.trayAdd=null;ui.secAdding=null;render();window.scrollTo(0,0);break;
     case "tray-collapse":{var tk=el.dataset.k;state.trayOpen[tk]=!state.trayOpen[tk];if(!state.trayOpen[tk]&&ui.trayAdd===tk)ui.trayAdd=null;save();render();break;}
     case "trayall":{var wo=v==="1";TRAYS.forEach(function(tr){state.trayOpen[tr.key]=wo;});save();render();break;}
@@ -824,6 +926,7 @@ document.addEventListener("keydown",function(e){
     if(e.target.id==="inl-text"){e.preventDefault();inlSave(e.target.dataset.p,e.target.dataset.s);}
     if(e.target.id==="sec-text"){e.preventDefault();secAddSave(e.target.dataset.p);}
     if(e.target.id==="tray-text"){e.preventDefault();traySave(e.target.dataset.k);}
+    if(e.target.id==="au-pass"||e.target.id==="au-user"){e.preventDefault();doAuth();}
   }
 });
 
@@ -854,20 +957,7 @@ function secAddSave(pid){
   ui.secAdding=null;save();render();
 }
 
-load();ui.date=todayStr();
-if(state.timers&&state.timers.autoclave&&!state.timers.sterilization){state.timers.sterilization=state.timers.autoclave;try{delete state.timers.autoclave;}catch(e){}}
-state.patients.forEach(function(p){if(!p.date)p.date=ui.date;});
-state.general.forEach(function(t){if(!t.date)t.date=ui.date;});
-TRAYS.forEach(function(tr){if(state.trays[tr.key]===undefined)state.trays[tr.key]=TRAY_DEFAULTS[tr.key]?TRAY_DEFAULTS[tr.key].slice():[];});
-state.patients.forEach(function(p){
-  if(!p.sections){
-    var legacy=(p.tasks||[]).map(function(t){return {id:t.id||uid(),text:t.text,done:!!t.done};});
-    p.sections=legacy.length?[{id:uid(),title:"Checklist",open:false,tasks:legacy}]:[];
-  }
-  try{delete p.tasks;}catch(e){}
-  if(p.ord==null)p.ord=smartMin(p);
-});
-save();render();tick();setInterval(tick,1000);
+boot();
 })();
 </script>
 </body>
