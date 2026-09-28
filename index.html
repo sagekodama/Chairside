@@ -128,6 +128,7 @@ h1{font-family:var(--head);font-weight:700;font-size:30px;letter-spacing:-.02em;
 .inline-add input[type=text]{flex:1 1 180px;}
 
 input[type=text],input[type=tel],input[type=time],textarea,select{width:100%;background:var(--bg);border:0;border-radius:12px;padding:12px 14px;box-shadow:var(--inset-sm);}
+input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus,input:-webkit-autofill:active{-webkit-text-fill-color:var(--ink);-webkit-box-shadow:0 0 0 1000px var(--bg) inset;box-shadow:0 0 0 1000px var(--bg) inset;caret-color:var(--ink);border-radius:12px;transition:background-color 9999s ease-in-out 0s;}
 textarea{min-height:110px;resize:vertical;}
 select{width:auto;}
 label.field{display:block;font-weight:600;font-size:14px;margin:16px 0 6px;}
@@ -193,6 +194,7 @@ nav{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:
 .auth-sub{color:var(--muted);font-size:15px;margin:4px 0 6px;}
 .auth-err{color:var(--urgent);font-size:14px;font-weight:600;margin:12px 0 0;}
 .auth-line{text-align:center;color:var(--muted);font-size:14px;margin:14px 0 0;}
+.auth-hint{color:var(--muted);font-size:12px;margin:6px 0 0;}
 body.pre-auth{overflow:hidden;}
 .hrow{display:flex;justify-content:space-between;align-items:center;gap:10px;min-height:40px;}
 .hrow .date{margin:0;}
@@ -384,13 +386,15 @@ function initSupabase(){try{if(window.supabase&&window.supabase.createClient){sb
 function scheduleCloudSave(){clearTimeout(saveTimer);saveTimer=setTimeout(pushCloud,700);}
 function pushCloud(){if(!sb||!currentUser)return;try{sb.from("app_state").upsert({user_id:currentUser.id,data:state,updated_at:new Date().toISOString()}).then(function(res){if(res&&res.error)console.warn("cloud save failed:",res.error.message);},function(e){console.warn("cloud save error",e);});}catch(e){}}
 
-function emailFor(u){return u.toLowerCase().trim()+"@"+EMAIL_DOMAIN;}
+function cleanUser(u){return (u||"").toLowerCase().trim().replace(/[^a-z0-9._-]/g,"");}
+function emailFor(u){return cleanUser(u)+"@"+EMAIL_DOMAIN;}
 function userFromEmail(e){return (e||"").split("@")[0];}
 function aEl(id){return document.getElementById(id);}
 function authErr(msg){var e=aEl("au-err");if(e){e.textContent=msg||"";e.style.display=msg?"block":"none";}}
 function authBusy(b){var s=aEl("au-submit");if(s){s.disabled=b;s.textContent=b?"Please wait…":(authMode==="signup"?"Create account":"Log in");}}
 function friendlyAuth(m){m=(m||"").toLowerCase();
   if(m.indexOf("already")>-1&&m.indexOf("regist")>-1)return "That username is taken — try logging in instead.";
+  if(m.indexOf("email")>-1&&(m.indexOf("invalid")>-1||m.indexOf("valid")>-1||m.indexOf("format")>-1))return "That username has characters we can\u2019t use \u2014 stick to letters and numbers.";
   if(m.indexOf("invalid")>-1)return "Wrong username or password.";
   if(m.indexOf("6 char")>-1||(m.indexOf("password")>-1&&m.indexOf("short")>-1))return "Password must be at least 6 characters.";
   if(m.indexOf("fetch")>-1||m.indexOf("network")>-1||m.indexOf("failed to")>-1)return "Can't reach the server. Check your connection, or use this device only.";
@@ -402,7 +406,7 @@ function renderAuth(){
     '<h1 class="auth-title">Chairside</h1>'+
     '<p class="auth-sub">'+(signup?"Create an account to save your checklists":"Log in to your checklists")+'</p>'+
     '<label class="field" for="au-user">Username</label><input id="au-user" type="text" autocomplete="username" autocapitalize="none" spellcheck="false">'+
-    '<label class="field" for="au-pass">Password</label><input id="au-pass" type="password" autocomplete="'+(signup?"new-password":"current-password")+'">'+
+    '<p class="auth-hint">Letters and numbers, no spaces</p><label class="field" for="au-pass">Password</label><input id="au-pass" type="password" autocomplete="'+(signup?"new-password":"current-password")+'">'+
     '<p class="auth-err" id="au-err" style="display:none"></p>'+
     '<button class="btn block" id="au-submit" data-a="au-do">'+(signup?"Create account":"Log in")+'</button>'+
     '<p class="auth-line">'+(signup?"Already have an account? ":"New here? ")+'<button class="link" data-a="au-switch">'+(signup?"Log in":"Create an account")+'</button></p>'+
@@ -414,8 +418,8 @@ function hideAuth(){var b=aEl("auth");if(b){b.style.display="none";b.innerHTML="
 
 function doAuth(){
   if(!sb){authErr("Server not loaded. Use this device only for now.");return;}
-  var u=((aEl("au-user")||{}).value||"").trim(), p=(aEl("au-pass")||{}).value||"";
-  if(u.length<3){authErr("Username must be at least 3 characters.");return;}
+  var u=cleanUser((aEl("au-user")||{}).value||""), p=(aEl("au-pass")||{}).value||"";
+  if(u.length<3){authErr("Username needs at least 3 letters or numbers (no spaces or symbols).");return;}
   if(p.length<6){authErr("Password must be at least 6 characters.");return;}
   authErr("");authBusy(true);
   var email=emailFor(u);
